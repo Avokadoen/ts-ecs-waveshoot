@@ -1,0 +1,31 @@
+{
+  "name": "wave-shooter-ecs",
+  "version": "1.0.0",
+  "description": "Implementation example of naive-ts-ecs",
+  "private": true,
+  "scripts": {
+    "start": "webpack-dev-server",
+    "build": "webpack --mode development",
+    "build:prod": "webpack --mode production",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "ECS",
+    "Game",
+    "Waveshooter",
+    "Simple"
+  ],
+  "author": "Avokadoen",
+  "license": "MIT",
+  "devDependencies": {
+    "ts-loader": "^7.0.5",
+    "typescript": "^3.9.5",
+    "webpack": "^4.43.0",
+    "webpack-cli": "^3.3.12",
+    "webpack-dev-server": "^3.11.0"
+  },
+  "dependencies": {
+    "naive-ts-ecs": "^1.1.3",
+    "rxjs": "^6.5.5"
+  }
+}
