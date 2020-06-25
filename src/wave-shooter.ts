@@ -8,11 +8,13 @@ import {Component, ECSManager, EscQuery, QueryToken} from 'naive-ts-ecs';
 import {Bullet} from './model/bullet';
 import {Enemy} from './model/enemy';
 import {Unique} from './model/unique';
+import { ScoreTextTag, ScoreText } from './model/score-text';
 
 export class WaveShooterGame {
   public readonly ENEMIES_SPEED = 210;
   public readonly BULLET_SPEED = 500;
   public readonly PLAYER_SPEED = 250;
+  public readonly SCORE_TEXT_SPEED = 200;
 
   public readonly ENEMY_ATTR = new Rectangle('#ff4081', { x: 20, y: 30 });
   public readonly PLAYER_ATTR = new Rectangle('#3f51b5', { x: 20, y: 30 });
@@ -21,25 +23,14 @@ export class WaveShooterGame {
   readonly ENEMIES_COUNT = 40;
   readonly BULLET_COUNT = 20;
 
-  playerScore: number;
-
   public keysDown: string[] = [];
-
   public manager: ECSManager;
 
-  public difficultyScaling(): number {
-    const ceiling = 2000;
-    return Math.max(this.playerScore / ceiling, 1);
-  }
+  // we keep a component reference (this is a nono)
+  playerRef: Player;
 
-  public viewKeysDown(): string[] {
-    return this.keysDown
-  }
-
-  constructor(private canvas: HTMLCanvasElement) {
+  constructor(public canvas: HTMLCanvasElement) {
     this.manager = new ECSManager();
-
-    this.playerScore = 0;
 
     this.manager.createEntity().addComponent(new Unique());
 
@@ -57,8 +48,13 @@ export class WaveShooterGame {
         .addComponent(this.BULLET_ATTR);
     }
 
+    const scoreTextTagComp = new ScoreTextTag();
+    for (let i = 0; i < 10; i++) {
+      this.manager.createEntity()
+        .addComponent(scoreTextTagComp)
+    }
     
-    const player = new Player();
+    this.playerRef = new Player(0);
 
     const playerMov = new Movable(
       {
@@ -73,15 +69,9 @@ export class WaveShooterGame {
     );
 
     this.manager.createEntity()
-      .addComponent(player)
+      .addComponent(this.playerRef)
       .addComponent(playerMov)
       .addComponent(this.PLAYER_ATTR);
-
-    UtilityModule.initialize(this.manager);
-    BulletModule.initialize(this.manager);
-
-    EnemyModule.initialize(this, canvas);
-    PlayerModule.initialize(this, canvas);
 
     fromEvent(window, 'keydown').pipe(
       map(e => e as KeyboardEvent),
@@ -104,18 +94,39 @@ export class WaveShooterGame {
     ).subscribe(e => this.keysDown = this.keysDown.filter(k => k !== e.key));
   }
 
+  initialize(): void {
+    UtilityModule.initialize(this.manager, this.canvas);
+    BulletModule.initialize(this.manager);
+
+    const difficultyScaling = () => {
+      const ceiling = 2000;
+      return Math.max(this.playerRef.score / ceiling, 1);
+    };
+    EnemyModule.initialize(this, difficultyScaling);
+
+    const viewKeysDown = () => {
+      return this.keysDown
+    };
+    PlayerModule.initialize(this, viewKeysDown);
+  }
+
   dispatch(): void {
     this.manager.dispatch();
   }
 }
 
 module UtilityModule {
-  export function initialize(manager: ECSManager) {
-    rDrawEntitySystem(manager);
+  export function initialize(manager: ECSManager, canvas: HTMLCanvasElement) {
+    const ctx = canvas.getContext('2d');
+
+    rDrawEntitySystem(manager, ctx);
+    rdrawScoreTextSystem(manager, ctx);
+
     rMoveMovablesSystem(manager);
+    rMoveScoreTextSystem(manager);
   }
 
-  function rDrawEntitySystem(manager: ECSManager) {
+  function rDrawEntitySystem(manager: ECSManager, ctx: CanvasRenderingContext2D) {
     const query: EscQuery = [
       {
         componentIdentifier: Rectangle.identifier,
@@ -127,9 +138,7 @@ module UtilityModule {
       }
     ];
 
-
-    const ctx = this.canvas.getContext('2d');
-    const drawRectangleSystem = (_: number, args: Component<any>[]) => {
+    const drawRectangleSystem = (_: number, args: Component<object>[]) => {
       const rectangle = args[0].data as Rectangle;
       const movable = args[1].data as Movable;
 
@@ -140,19 +149,45 @@ module UtilityModule {
     manager.registerSystem(drawRectangleSystem, query);
   }
 
+  function rdrawScoreTextSystem(manager: ECSManager, ctx: CanvasRenderingContext2D) {
+    const query: EscQuery = [
+      {
+        componentIdentifier: ScoreText.identifier,
+        token: QueryToken.FIRST,
+      },
+      {
+        componentIdentifier: 'Movable',
+        token: QueryToken.AND
+      }
+    ];
+
+    const drawScoreTextSystem = (_: number, args: Component<object>[]) => {
+      const scoreText = args[0].data as ScoreText;
+      const movable = args[1].data as Movable;
+
+      ctx.fillStyle = `rgba(255, 255, 255, ${scoreText.alpha})`; 
+      ctx.font = `${scoreText.fontSize}px serif`;
+      ctx.textAlign = 'center';
+
+      ctx.fillText(scoreText.content, movable.position.x, movable.position.y);
+    }
+
+    manager.registerSystem(drawScoreTextSystem, query);
+  }
+
   function rMoveMovablesSystem(manager: ECSManager) {
     const query: EscQuery = [
       {
-        componentIdentifier: 'Movable',
+        componentIdentifier: Movable.identifier,
         token: QueryToken.FIRST
       },
       {
-        componentIdentifier: 'Player',
+        componentIdentifier: Player.identifier,
         token: QueryToken.AND_NOT
       }
     ];
 
-    const movableSystem = (deltaTime: number, args: Component<any>[]) => {
+    const movableSystem = (deltaTime: number, args: Component<object>[]) => {
       const movable = args[0].data as Movable;
 
       movable.velocity = scale(normalize(movable.velocity), movable.speed);
@@ -162,12 +197,48 @@ module UtilityModule {
 
     manager.registerSystem(movableSystem, query);
   }
+
+  function rMoveScoreTextSystem(manager: ECSManager) {
+    const query: EscQuery = [
+      {
+        componentIdentifier: ScoreText.identifier,
+        token: QueryToken.FIRST
+      },
+      {
+        componentIdentifier: Movable.identifier,
+        token: QueryToken.AND
+      }
+    ];
+
+    const speedDecay = 80;
+    const sizeDecay = 20;
+    const alphaDecay = 0.4;
+
+    const moveScoreTextSystem = (deltaTime: number, args: Component<object>[]) => {
+      const scoreText = args[0].data as ScoreText;
+      const movable = args[1].data as Movable;
+
+      movable.speed -= speedDecay * deltaTime;
+      scoreText.fontSize += sizeDecay * deltaTime;
+      scoreText.alpha -= alphaDecay * deltaTime;
+     
+      if (movable.speed < 30) {
+        manager.removeComponent(args[0].entityId, ScoreText.identifier);
+        manager.removeComponent(args[1].entityId, Movable.identifier);
+        return true;
+      }
+
+      return false;
+    };
+
+    manager.registerSystem(moveScoreTextSystem, query);
+  }
 }
 
 module PlayerModule {
-  export function initialize(game: WaveShooterGame, canvas: HTMLCanvasElement) {
-    rPlayerMoveSystem(game.manager, game.viewKeysDown);
-    rShootBulletEvent(game.manager, canvas, game.BULLET_SPEED);
+  export function initialize(game: WaveShooterGame, viewKeysDown: () => string []) {
+    rPlayerMoveSystem(game.manager, viewKeysDown);
+    rShootBulletEvent(game.manager, game.canvas, game.BULLET_SPEED);
   }
 
   function rPlayerMoveSystem(manager: ECSManager, viewKeysDown: () => string[]) {
@@ -182,7 +253,7 @@ module PlayerModule {
       }
     ];
 
-    const playerMoveSystem = (deltaTime: number, args: Component<any>[]) => {
+    const playerMoveSystem = (deltaTime: number, args: Component<object>[]) => {
       const _ = args[0].data as Player;
       const movable = args[1].data as Movable;
 
@@ -228,7 +299,7 @@ module PlayerModule {
         },
       ];
 
-      const shootBulletEvent = (event: Event, args: Component<any>[]) => {
+      const shootBulletEvent = (event: Event, args: Component<object>[]) => {
         // const player = args[0].data as Player;
         const movable = args[1].data as Movable;
         const rectangle = args[2].data as Rectangle;
@@ -280,9 +351,9 @@ module PlayerModule {
 }
 
 module EnemyModule {
-  export function initialize(game: WaveShooterGame, canvas: HTMLCanvasElement) {
+  export function initialize(game: WaveShooterGame, difficultyScaling: () => number) {
     rTargetPlayerSystem(game.manager);
-    rSpawnEnemySystem(game.manager, canvas, game.ENEMIES_SPEED, game.difficultyScaling);
+    rSpawnEnemySystem(game.manager, game.canvas, game.ENEMIES_SPEED, difficultyScaling);
   }
 
   function rTargetPlayerSystem(manager: ECSManager) {
@@ -333,7 +404,7 @@ module EnemyModule {
     ];
 
 
-    const spawnEnemySystem = (_: Event, args: Component<any>[]) => {
+    const spawnEnemySystem = (_: Event, args: Component<object>[]) => {
       // const Enemy = args[0].data as Enemy;
 
       const xIsSmooth = (Math.random() > 0.5);
@@ -448,6 +519,21 @@ module BulletModule {
         componentIdentifier: Enemy.identifier,
         token: QueryToken.AND
       },
+      {
+        componentIdentifier: Player.identifier,
+        token: QueryToken.OR
+      },
+    ];
+
+    const textQuery: EscQuery = [
+      {
+        componentIdentifier: ScoreTextTag.identifier,
+        token: QueryToken.FIRST
+      },
+      {
+        componentIdentifier: ScoreText.identifier,
+        token: QueryToken.AND_NOT
+      },
     ];
 
     const bulletHitSystem = (_: number, args: Component<object>[], sharedArgs: Component<object>[]) => {
@@ -456,14 +542,26 @@ module BulletModule {
         return;
       }
       const bMov = args[1].data as Movable;
+      const player = sharedArgs[sharedArgs.length-1].data as Player;
 
-      for (let i = 0; i < sharedArgs.length; i += 3) {
+      for (let i = 0; i < sharedArgs.length - 3; i += 3) {
         const enemyRect = sharedArgs[i].data as Rectangle;
         const enemyMov = sharedArgs[i + 1].data as Movable;
 
         if (isColling(bRect, bMov, enemyRect, enemyMov)) {
+          player.score += 10;
           manager.removeComponent(sharedArgs[i + 1].entityId, Movable.identifier);
           manager.removeComponent(args[1].entityId, Movable.identifier);
+
+          // TODO: query in game loop :( (find alternative)
+          const textId = manager.queryEntities(textQuery)?.entities[0]?.id;
+          if (!isNaN(textId)) {
+            const pMovable = sharedArgs[sharedArgs.length-2].data as Movable;
+            
+            manager.addComponent(textId, new ScoreText(`${player.score}`, 30, 1))
+            .addComponent(new Movable({ x: pMovable.position.x, y: pMovable.position.y }, {x: 0, y: -1}, 200));
+          }
+
           return true;
         }
       }

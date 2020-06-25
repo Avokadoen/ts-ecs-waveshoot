@@ -4,7 +4,7 @@
   "description": "Implementation example of naive-ts-ecs",
   "private": true,
   "scripts": {
-    "start": "webpack-dev-server",
+    "start": "webpack-dev-server --watch-content-base",
     "build": "webpack --mode development",
     "build:prod": "webpack --mode production",
     "test": "echo \"Error: no test specified\" && exit 1"

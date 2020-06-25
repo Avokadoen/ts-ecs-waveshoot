@@ -9,6 +9,8 @@ fromEvent(window, 'DOMContentLoaded').subscribe(() => {
   }
 
   const waveShoot = new WaveShooterGame(canvas);
+  waveShoot.initialize();
+  
   const ctx = canvas.getContext('2d');
 
   let prevFrame = Date.now();
