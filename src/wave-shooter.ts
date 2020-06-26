@@ -41,6 +41,7 @@ export class WaveShooterGame {
         .addComponent(this.ENEMY_ATTR);
     }
 
+    // set bullet range to 500
     const bulletComp = new Bullet(500);
     for (let i = 0; i < this.BULLET_COUNT; i++) {
       this.manager.createEntity()

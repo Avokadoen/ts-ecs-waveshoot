@@ -25,7 +25,7 @@
     "webpack-dev-server": "^3.11.0"
   },
   "dependencies": {
-    "naive-ts-ecs": "^1.2.1",
+    "naive-ts-ecs": "^1.2.2",
     "rxjs": "^6.5.5"
   }
 }
