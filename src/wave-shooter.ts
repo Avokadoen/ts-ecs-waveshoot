@@ -4,11 +4,24 @@ import {Player} from './model/player.model';
 import {fromEvent, timer} from 'rxjs';
 import {delay, filter, map} from 'rxjs/operators';
 import {magnitude, normalize, scale} from './model/vector2D.model';
-import {Component, ECSManager, EscQuery, QueryToken} from 'naive-ts-ecs';
 import {Bullet} from './model/bullet';
-import {Enemy} from './model/enemy';
-import {Unique} from './model/unique';
+import {EnemyTag} from './model/enemy';
+import {UniqueTag} from './model/unique';
 import { ScoreTextTag, ScoreText } from './model/score-text';
+import { 
+  ECSManager, 
+  QueryNode, 
+  QueryToken, 
+  Component, 
+  registerComponentType, 
+  addComponent, 
+  registerSystem,
+  removeComponent,
+  QueryBuilder, 
+  registerEvent
+} from 'naive-ts-ecs';
+
+// TODO: enemey and bullet should be using an active and inactive tag instead of removing movable
 
 export class WaveShooterGame {
   public readonly ENEMIES_SPEED = 210;
@@ -16,9 +29,10 @@ export class WaveShooterGame {
   public readonly PLAYER_SPEED = 250;
   public readonly SCORE_TEXT_SPEED = 200;
 
-  public readonly ENEMY_ATTR = new Rectangle('#ff4081', { x: 20, y: 30 });
-  public readonly PLAYER_ATTR = new Rectangle('#3f51b5', { x: 20, y: 30 });
-  public readonly BULLET_ATTR = new Rectangle('#ffffff', { x: 4, y: 4 });
+  public readonly PLAYER_RECT: Rectangle = {
+    color: '#3f51b5', 
+    size: { x: 20, y: 30 }
+  };
 
   readonly ENEMIES_COUNT = 40;
   readonly BULLET_COUNT = 20;
@@ -26,52 +40,79 @@ export class WaveShooterGame {
   public keysDown: string[] = [];
   public manager: ECSManager;
 
-  // we keep a component reference (this is a nono)
-  playerRef: Player;
-
   constructor(public canvas: HTMLCanvasElement) {
     this.manager = new ECSManager();
 
-    this.manager.createEntity().addComponent(new Unique());
+    // As of 1.4 all components has to be registered before they can be added
+    registerComponentType<UniqueTag>(this.manager, {});
+    registerComponentType<EnemyTag>(this.manager, {});
+    registerComponentType<Bullet>(this.manager, { maxRange: 800 });
+    registerComponentType<ScoreText>(this.manager, {
+      content: '', 
+      fontSize: 30, 
+      alpha: 1 
+    });
+    registerComponentType<ScoreTextTag>(this.manager, {});
+    registerComponentType<Player>(this.manager, { score: 0 });
+    registerComponentType<Movable>(this.manager, {
+      position: {
+        x: 0,
+        y: 0
+      },
+      velocity: {
+        x: 0,
+        y: 0
+      },
+      speed: 0
+    });
+    registerComponentType<Rectangle>(this.manager, {
+      color: '#ffffff',
+      size: { x: 500, y: 500 }
+    })
 
-    const enemyComp = new Enemy();
+    addComponent<UniqueTag>(this.manager, this.manager.createEntity().entityId);
     for (let i = 0; i < this.ENEMIES_COUNT; i++) {
-      this.manager.createEntity()
-        .addComponent(enemyComp)
-        .addComponent(this.ENEMY_ATTR);
+      const { entityId } = this.manager.createEntity();
+      addComponent<EnemyTag>(this.manager, entityId);
+      addComponent<Rectangle>(this.manager, entityId, {
+        color: '#ff4081', 
+        size: { x: 20, y: 30 }
+      });
     }
 
-    const bulletComp = new Bullet(500);
     for (let i = 0; i < this.BULLET_COUNT; i++) {
-      this.manager.createEntity()
-        .addComponent(bulletComp)
-        .addComponent(this.BULLET_ATTR);
+      const { entityId } = this.manager.createEntity();
+      addComponent<Bullet>(this.manager, entityId);
+      addComponent<Rectangle>(this.manager, entityId, {
+        color: '#ffffff', 
+        size: { x: 4, y: 4 }
+      });
     }
 
-    const scoreTextTagComp = new ScoreTextTag();
     for (let i = 0; i < 10; i++) {
-      this.manager.createEntity()
-        .addComponent(scoreTextTagComp)
+      const { entityId } = this.manager.createEntity();
+      addComponent<ScoreTextTag>(this.manager, entityId);
     }
     
-    this.playerRef = new Player(0);
-
-    const playerMov = new Movable(
-      {
-        x: canvas.width * 0.5 - this.PLAYER_ATTR.size.x * 0.5,
-        y: canvas.height * 0.5 - this.PLAYER_ATTR.size.y * 0.5
-      },
-      {
-        x: 0,
-        y: 0,
-      },
-      this.PLAYER_SPEED
-    );
-
-    this.manager.createEntity()
-      .addComponent(this.playerRef)
-      .addComponent(playerMov)
-      .addComponent(this.PLAYER_ATTR);
+    {
+      const { entityId } = this.manager.createEntity();
+      addComponent<Player>(this.manager, entityId);
+      addComponent<Movable>(this.manager, entityId, {
+        position: {
+          x: canvas.width * 0.5 - this.PLAYER_RECT.size.x * 0.5,
+          y: canvas.height * 0.5 - this.PLAYER_RECT.size.y * 0.5
+        },
+        velocity: {
+          x: 0,
+          y: 0,
+        },
+        speed: this.PLAYER_SPEED
+      });
+      addComponent<Rectangle>(this.manager, entityId, {
+        color: '#3f51b5', 
+        size: { x: 20, y: 30 }
+      });
+    }
 
     fromEvent(window, 'keydown').pipe(
       map(e => e as KeyboardEvent),
@@ -96,11 +137,13 @@ export class WaveShooterGame {
 
   initialize(): void {
     UtilityModule.initialize(this.manager, this.canvas);
+
     BulletModule.initialize(this.manager);
 
     const difficultyScaling = () => {
       const ceiling = 2000;
-      return Math.max(this.playerRef.score / ceiling, 1);
+      const playerScore = 1000; // TODO:
+      return Math.min(playerScore / ceiling, 1);
     };
     EnemyModule.initialize(this, difficultyScaling);
 
@@ -127,111 +170,58 @@ module UtilityModule {
   }
 
   function rDrawEntitySystem(manager: ECSManager, ctx: CanvasRenderingContext2D) {
-    const query: EscQuery = [
-      {
-        componentIdentifier: Rectangle.identifier,
-        token: QueryToken.FIRST,
-      },
-      {
-        componentIdentifier: Movable.identifier,
-        token: QueryToken.AND
-      }
-    ];
-
-    const drawRectangleSystem = (_: number, args: Component<object>[]) => {
-      const rectangle = args[0].data as Rectangle;
-      const movable = args[1].data as Movable;
-
-      ctx.fillStyle = rectangle.color;
-      ctx.fillRect(movable.position.x, movable.position.y, rectangle.size.x, rectangle.size.y);
+    const drawRectangleSystem = (_: number, rect: Component<Rectangle>, movable: Component<Movable>) => {
+      ctx.fillStyle = rect.data.color;
+      ctx.fillRect(
+        movable.data.position.x, 
+        movable.data.position.y, 
+        rect.data.size.x, 
+        rect.data.size.y
+      );
     };
 
-    manager.registerSystem(drawRectangleSystem, query);
+    registerSystem(manager, drawRectangleSystem);
   }
 
   function rdrawScoreTextSystem(manager: ECSManager, ctx: CanvasRenderingContext2D) {
-    const query: EscQuery = [
-      {
-        componentIdentifier: ScoreText.identifier,
-        token: QueryToken.FIRST,
-      },
-      {
-        componentIdentifier: 'Movable',
-        token: QueryToken.AND
-      }
-    ];
-
-    const drawScoreTextSystem = (_: number, args: Component<object>[]) => {
-      const scoreText = args[0].data as ScoreText;
-      const movable = args[1].data as Movable;
-
-      ctx.fillStyle = `rgba(255, 255, 255, ${scoreText.alpha})`; 
-      ctx.font = `${scoreText.fontSize}px serif`;
+    const drawScoreTextSystem = (_: number, st: Component<ScoreText>, mov: Component<Movable>) => {
+      ctx.fillStyle = `rgba(255, 255, 255, ${st.data.alpha})`; 
+      ctx.font = `${st.data.fontSize}px serif`;
       ctx.textAlign = 'center';
 
-      ctx.fillText(scoreText.content, movable.position.x, movable.position.y);
+      ctx.fillText(st.data.content, mov.data.position.x, mov.data.position.y);
     }
 
-    manager.registerSystem(drawScoreTextSystem, query);
+    registerSystem(manager, drawScoreTextSystem);
   }
 
   function rMoveMovablesSystem(manager: ECSManager) {
-    const query: EscQuery = [
-      {
-        componentIdentifier: Movable.identifier,
-        token: QueryToken.FIRST
-      },
-      {
-        componentIdentifier: Player.identifier,
-        token: QueryToken.AND_NOT
-      }
-    ];
-
-    const movableSystem = (deltaTime: number, args: Component<object>[]) => {
-      const movable = args[0].data as Movable;
-
-      movable.velocity = scale(normalize(movable.velocity), movable.speed);
-      movable.position.x += movable.velocity.x * deltaTime;
-      movable.position.y += movable.velocity.y * deltaTime;
+    const movableSystem = (deltaTime: number, movable: Component<Movable>) => {
+      movable.data.velocity = scale(normalize(movable.data.velocity), movable.data.speed);
+      movable.data.position.x += movable.data.velocity.x * deltaTime;
+      movable.data.position.y += movable.data.velocity.y * deltaTime;
     };
 
-    manager.registerSystem(movableSystem, query);
+    registerSystem(manager, movableSystem);
   }
 
   function rMoveScoreTextSystem(manager: ECSManager) {
-    const query: EscQuery = [
-      {
-        componentIdentifier: ScoreText.identifier,
-        token: QueryToken.FIRST
-      },
-      {
-        componentIdentifier: Movable.identifier,
-        token: QueryToken.AND
-      }
-    ];
-
     const speedDecay = 80;
     const sizeDecay = 20;
     const alphaDecay = 0.4;
 
-    const moveScoreTextSystem = (deltaTime: number, args: Component<object>[]) => {
-      const scoreText = args[0].data as ScoreText;
-      const movable = args[1].data as Movable;
-
-      movable.speed -= speedDecay * deltaTime;
-      scoreText.fontSize += sizeDecay * deltaTime;
-      scoreText.alpha -= alphaDecay * deltaTime;
+    const moveScoreTextSystem = (deltaTime: number, scoreText: Component<ScoreText>, movable: Component<Movable>) => {
+      movable.data.speed -= speedDecay * deltaTime;
+      scoreText.data.fontSize += sizeDecay * deltaTime;
+      scoreText.data.alpha -= alphaDecay * deltaTime;
      
-      if (movable.speed < 30) {
-        manager.removeComponent(args[0].entityId, ScoreText.identifier);
-        manager.removeComponent(args[1].entityId, Movable.identifier);
-        return true;
+      if (movable.data.speed < 30) {
+        removeComponent<ScoreText>(manager, scoreText.entityId);
+        removeComponent<Movable>(manager, movable.entityId);
       }
-
-      return false;
     };
 
-    manager.registerSystem(moveScoreTextSystem, query);
+    registerSystem(manager, moveScoreTextSystem);
   }
 }
 
@@ -242,111 +232,70 @@ module PlayerModule {
   }
 
   function rPlayerMoveSystem(manager: ECSManager, viewKeysDown: () => string[]) {
-    const query: EscQuery = [
-      {
-        componentIdentifier: Player.identifier,
-        token: QueryToken.FIRST
-      },
-      {
-        componentIdentifier: Movable.identifier,
-        token: QueryToken.AND
-      }
-    ];
-
-    const playerMoveSystem = (deltaTime: number, args: Component<object>[]) => {
-      const _ = args[0].data as Player;
-      const movable = args[1].data as Movable;
-
+    const playerMoveSystem = (deltaTime: number, _: Component<Player>, movable: Component<Movable>) => {
       const keys = viewKeysDown();
 
       for (const key of keys) {
         switch (key) {
           case 'w':
-            movable.velocity.y = -1;
+            movable.data.velocity.y = -1;
             break;
           case 'a':
-            movable.velocity.x = -1;
+            movable.data.velocity.x = -1;
             break;
           case 's':
-            movable.velocity.y = 1;
+            movable.data.velocity.y = 1;
             break;
           case 'd':
-            movable.velocity.x = 1;
+            movable.data.velocity.x = 1;
             break;
         }
       }
-      movable.velocity = scale(normalize(movable.velocity), movable.speed);
-      movable.position.x += movable.velocity.x * deltaTime;
-      movable.position.y += movable.velocity.y * deltaTime;
+      movable.data.velocity = scale(normalize(movable.data.velocity), movable.data.speed);
+      movable.data.position.x += movable.data.velocity.x * deltaTime;
+      movable.data.position.y += movable.data.velocity.y * deltaTime;
 
-      movable.velocity.x = 0;
-      movable.velocity.y = 0;
+      movable.data.velocity.x = 0;
+      movable.data.velocity.y = 0;
     };
 
-    manager.registerSystem(playerMoveSystem, query);
+    registerSystem(manager, playerMoveSystem);
   }
 
   function rShootBulletEvent(manager: ECSManager, canvas: HTMLCanvasElement, bulletSpeed: number) {
-    {
-      const bulletQuery: EscQuery = [
-        {
-          componentIdentifier: Bullet.identifier,
-          token: QueryToken.FIRST
-        },
-        {
-          componentIdentifier: Movable.identifier,
-          token: QueryToken.AND_NOT
-        },
-      ];
 
-      const shootBulletEvent = (event: Event, args: Component<object>[]) => {
-        // const player = args[0].data as Player;
-        const movable = args[1].data as Movable;
-        const rectangle = args[2].data as Rectangle;
+    const bulletQuery = new QueryBuilder().identifier('Bullet')
+      .token(QueryToken.NOT)
+      .identifier('Movable')
+      .build();
 
-        const e = event as MouseEvent;
+    const shootBulletEvent = (event: Event, movable: Component<Movable>, rectangle: Component<Rectangle>) => {
+      const e = event as MouseEvent;
 
-        const clickDelta = {
-          x: e.clientX - (movable.position.x + rectangle.size.x * 0.5) - canvas.offsetLeft,
-          y: e.clientY - (movable.position.y + rectangle.size.y * 0.5) - canvas.offsetTop
-        };
-
-        const shootDirection = normalize(clickDelta);
-
-        const bulletSpawn = scale(shootDirection, 20);
-
-        // TODO: query in game loop :( (find alternative)
-        const bulletId = manager.queryEntities(bulletQuery).entities[0].id;
-        manager.addComponent(bulletId, 
-          new Movable(
-            {
-              x: movable.position.x + rectangle.size.x * 0.5 + bulletSpawn.x,
-              y: movable.position.y + rectangle.size.y * 0.5 + bulletSpawn.y,
-            },
-            shootDirection,
-            bulletSpeed
-          )
-        );
+      const clickDelta = {
+        x: e.clientX - (movable.data.position.x + rectangle.data.size.x * 0.5) - canvas.offsetLeft,
+        y: e.clientY - (movable.data.position.y + rectangle.data.size.y * 0.5) - canvas.offsetTop
       };
 
-      const query: EscQuery = [
-        {
-          componentIdentifier: 'Player',
-          token: QueryToken.FIRST
-        },
-        {
-          componentIdentifier: 'Movable',
-          token: QueryToken.AND
-        },
-        {
-          componentIdentifier: 'Rectangle',
-          token: QueryToken.AND
-        }
-      ];
+      const shootDirection = normalize(clickDelta);
 
-      const onUserClick = manager.registerEvent(shootBulletEvent, query);
-      fromEvent(canvas, 'click').subscribe(e => manager.onEvent(onUserClick, e));
-    }
+      const bulletSpawn = scale(shootDirection, 20);
+
+      // TODO: query in game loop :( (find alternative)
+      const bulletId = manager.queryEntities(bulletQuery).entities[0].id;
+      // TODO: add a bulle spawn tag instead as adding a movable will invalidate the most common queries in the game
+      addComponent<Movable>(manager, bulletId, {
+        position: {
+          x: movable.data.position.x + rectangle.data.size.x * 0.5 + bulletSpawn.x,
+          y: movable.data.position.y + rectangle.data.size.y * 0.5 + bulletSpawn.y,
+        },
+        velocity: shootDirection,
+        speed: bulletSpeed
+      });
+    };
+
+    const onUserClick = registerEvent(manager, shootBulletEvent)
+    fromEvent(canvas, 'click').subscribe(e => manager.onEvent(onUserClick, e));
   }
 }
 
@@ -357,56 +306,59 @@ module EnemyModule {
   }
 
   function rTargetPlayerSystem(manager: ECSManager) {
-    const enemyQuery: EscQuery = [
-      {
-        componentIdentifier: Enemy.identifier,
-        token: QueryToken.FIRST
-      },
-      {
-        componentIdentifier: Movable.identifier,
-        token: QueryToken.AND
-      },
-      {
-        componentIdentifier: Player.identifier,
-        token: QueryToken.SHARED
-      },
-      {
-        componentIdentifier: Movable.identifier,
-        token: QueryToken.AND
-      },
-    ];
-
-    const targetPlayerSystem = (_: number, args: Component<object>[], sharedArgs: Component<object>[]) => {
-      // const enemy = args[0].data as Enemy;
-      const eMovable = args[1].data as Movable;
-      // const player = sharedArgs[0].data as Player;
-      const pMovable = sharedArgs[1].data as Movable;
-
-      eMovable.velocity = {
-            x: pMovable.position.x - eMovable.position.x,
-            y: pMovable.position.y - eMovable.position.y
-      };
+    const query: QueryNode = {
+        token: QueryToken.AND,
+        leftChild: {
+            typeStr: 'EnemyTag'
+        },
+        rightChild: {
+            token: QueryToken.OR,
+            leftChild: {
+                typeStr: 'Movable'
+            },
+            rightChild: {
+                token: QueryToken.SHARED,
+                leftChild: {
+                    token: QueryToken.AND,
+                    leftChild: {
+                        typeStr: 'Player'
+                    },
+                    rightChild: {
+                        typeStr: 'Movable'
+                    }
+                }
+            }
+        }
+    };
+    const targetPlayerSystem = (
+      _: number,
+      _enemy: Component<EnemyTag>,
+      eMovable: Component<Movable>,
+      _player: Component<Player>[],
+      pMovable: Component<Movable>[] 
+      ) => {
+        eMovable.data.velocity = {
+              x: pMovable[0].data.position.x - eMovable.data.position.x,
+              y: pMovable[0].data.position.y - eMovable.data.position.y
+        };
     };
 
-    manager.registerSystem(targetPlayerSystem, enemyQuery);
+    manager.registerSystemWithEscQuery(targetPlayerSystem, query);
   }
 
   function rSpawnEnemySystem(manager: ECSManager, canvas: HTMLCanvasElement, enemySpeed: number, difficultyScaling: () => number) {
-    const enemyQuery: EscQuery = [
-      {
-        componentIdentifier: Enemy.identifier,
-        token: QueryToken.FIRST
+    const enemyQuery: QueryNode = {
+      token: QueryToken.NOT,
+      leftChild: {
+        typeStr: 'EnemyTag'
       },
-      {
-        componentIdentifier: Movable.identifier,
-        token: QueryToken.AND_NOT
+      rightChild: {
+        typeStr: 'Movable'
       }
-    ];
+    };
 
 
-    const spawnEnemySystem = (_: Event, args: Component<object>[]) => {
-      // const Enemy = args[0].data as Enemy;
-
+    const spawnEnemySystem = (_e : Event, _u: Component<UniqueTag>) => {
       const xIsSmooth = (Math.random() > 0.5);
       let xSpawn: number;
       let ySpawn: number;
@@ -421,16 +373,15 @@ module EnemyModule {
       }
 
       const enemyId = manager.queryEntities(enemyQuery).entities[0]?.id;
-
       if (!isNaN(enemyId)) {
-        manager.addComponent(enemyId, new Movable(
-          {
+        addComponent<Movable>(manager, enemyId, {
+          position: {
             x: xSpawn,
             y: ySpawn,
           },
-          { x: 0, y: 0},
-          enemySpeed
-        ));
+          velocity: { x: 0, y: 0},
+          speed: enemySpeed
+        });
       }
     };
 
@@ -438,13 +389,8 @@ module EnemyModule {
       delay(Math.random() * (3 - (3.5 * difficultyScaling())))
     );
 
-    const enemySpawnQuery: EscQuery = [
-      {
-        componentIdentifier: Unique.identifier,
-        token: QueryToken.FIRST
-      }
-    ];
-    const onSpawnEnemy = manager.registerEvent(spawnEnemySystem, enemySpawnQuery);
+    
+    const onSpawnEnemy = registerEvent(manager, spawnEnemySystem);
     spawnEnemyEvent.subscribe(() => manager.onEvent(onSpawnEnemy, null));
   }
 }
@@ -457,119 +403,146 @@ module BulletModule {
   }
 
   function rDespawnBulletSystem(manager: ECSManager) {
-    const query: EscQuery = [
-      {
-        componentIdentifier: Bullet.identifier,
-        token: QueryToken.FIRST
+    // currently no typesafe option for querybuilder
+    const query: QueryNode = {
+      token: QueryToken.AND,
+      leftChild: {
+        typeStr: 'Bullet'
       },
-      {
-        componentIdentifier: Movable.identifier,
-        token: QueryToken.AND
-      },
-      {
-        componentIdentifier: Player.identifier,
-        token: QueryToken.SHARED
-      },
-      {
-        componentIdentifier: Movable.identifier,
-        token: QueryToken.AND
-      },
-    ];
-
-    const despawnBulletsSystem = (_: number, args: Component<object>[], sharedArgs: Component<object>[]) => {
-      const bullet = args[0].data as Bullet;
-      if (!args[1]) {
-        return;
-      }
-      const bMovable = args[1].data as Movable;
-      // const player = sharedArgs[0].data as Player;
-      const pMovable = sharedArgs[1].data as Movable;
-
-      if (Math.abs(magnitude(bMovable.position) - magnitude(pMovable.position)) > bullet.maxRange) {
-        manager.removeComponent(args[0].entityId, Movable.identifier);
+      rightChild: {
+        token: QueryToken.OR,
+        leftChild: {
+          typeStr: 'Movable'
+        },
+        rightChild: {
+          token: QueryToken.SHARED,
+          leftChild: {
+            token: QueryToken.AND,
+            leftChild: {
+              typeStr: 'Player'
+            },
+            rightChild: {
+              typeStr: 'Movable'
+            }
+          }
+        }
       }
     };
 
-    manager.registerSystem(despawnBulletsSystem, query);
+    const despawnBulletsSystem = (_: number, 
+      bullet: Component<Bullet>, 
+      bMovable: Component<Movable>, 
+      player: Component<Player>[], 
+      pMovable: Component<Movable>[]) => {
+
+      if (Math.abs(magnitude(bMovable.data.position) - magnitude(pMovable[0].data.position)) > bullet.data.maxRange) {
+        removeComponent<Movable>(manager, bMovable.entityId);
+      }
+    };
+
+    manager.registerSystemWithEscQuery(despawnBulletsSystem, query);
   }
 
   function rBulletHitSystem(manager: ECSManager) {
-    const query: EscQuery = [
-      {
-        componentIdentifier: Rectangle.identifier,
-        token: QueryToken.FIRST
+    const query: QueryNode = {
+      token: QueryToken.AND,
+      leftChild: {
+        typeStr: 'Rectangle'
       },
-      {
-        componentIdentifier: Movable.identifier,
-        token: QueryToken.AND
-      },
-      {
-        componentIdentifier: Bullet.identifier,
-        token: QueryToken.AND
-      },
-      {
-        componentIdentifier: Rectangle.identifier,
-        token: QueryToken.SHARED
-      },
-      {
-        componentIdentifier: Movable.identifier,
-        token: QueryToken.AND
-      },
-      {
-        componentIdentifier: Enemy.identifier,
-        token: QueryToken.AND
-      },
-      {
-        componentIdentifier: Player.identifier,
-        token: QueryToken.OR
-      },
-    ];
-
-    const textQuery: EscQuery = [
-      {
-        componentIdentifier: ScoreTextTag.identifier,
-        token: QueryToken.FIRST
-      },
-      {
-        componentIdentifier: ScoreText.identifier,
-        token: QueryToken.AND_NOT
-      },
-    ];
-
-    const bulletHitSystem = (_: number, args: Component<object>[], sharedArgs: Component<object>[]) => {
-      const bRect = args[0].data as Rectangle;
-      if (!args[1]) {
-        return;
-      }
-      const bMov = args[1].data as Movable;
-      const player = sharedArgs[sharedArgs.length-1].data as Player;
-
-      for (let i = 0; i < sharedArgs.length - 3; i += 3) {
-        const enemyRect = sharedArgs[i].data as Rectangle;
-        const enemyMov = sharedArgs[i + 1].data as Movable;
-
-        if (isColling(bRect, bMov, enemyRect, enemyMov)) {
-          player.score += 10;
-          manager.removeComponent(sharedArgs[i + 1].entityId, Movable.identifier);
-          manager.removeComponent(args[1].entityId, Movable.identifier);
-
-          // TODO: query in game loop :( (find alternative)
-          const textId = manager.queryEntities(textQuery)?.entities[0]?.id;
-          if (!isNaN(textId)) {
-            const pMovable = sharedArgs[sharedArgs.length-2].data as Movable;
-            
-            manager.addComponent(textId, new ScoreText(`${player.score}`, 30, 1))
-            .addComponent(new Movable({ x: pMovable.position.x, y: pMovable.position.y }, {x: 0, y: -1}, 200));
+      rightChild: {
+        token: QueryToken.AND,
+        leftChild: {
+          typeStr: 'Movable'
+        },
+        rightChild: {
+          token: QueryToken.OR,
+          leftChild: {
+            typeStr: 'Bullet'
+          },
+          rightChild: {
+              token: QueryToken.SHARED,
+              leftChild: {
+                token: QueryToken.AND,
+                leftChild: {
+                  typeStr: 'Rectangle'
+                },
+                rightChild: {
+                  token: QueryToken.AND,
+                  leftChild: {
+                    typeStr: 'Movable'
+                  },
+                  rightChild: {
+                    token: QueryToken.OR,
+                    leftChild: {
+                      typeStr: 'EnemyTag'
+                    },
+                    rightChild: {
+                      typeStr: 'Player'
+                    }
+                  }
+                }
+              }
           }
-
-          return true;
         }
       }
-
-      return false;
     };
 
-    manager.registerSystem(bulletHitSystem, query);
+    const textQuery: QueryNode = {
+      token: QueryToken.NOT,
+      leftChild: {
+        typeStr: 'ScoreTextTag'
+      },
+      rightChild: {
+        typeStr: 'ScoreText'
+      }
+    }
+
+    const bulletHitSystem = (
+        _: number,
+        bRectangle: Component<Rectangle>,
+        bMovable: Component<Movable>,
+        _bullet: Component<Bullet>,
+        rectangles: Component<Rectangle>[],
+        movable: Component<Movable>[],
+        enemyTag: Component<EnemyTag>[],
+        player: Component<Player>[],
+       ) => {
+
+        if (!enemyTag || !player) {
+          return;
+        }
+
+        for (let [index, enemy] of enemyTag.entries()) {
+          const eRectangle = rectangles[index]; // this just happens to align, otherwise a find id would be a safer approach
+          const eMovable = movable[index]; // same for this
+          if (isColling(bRectangle.data, bMovable.data, eRectangle.data, eMovable.data)) {
+            player[0].data.score += 10;
+            removeComponent<Movable>(manager, bMovable.entityId);
+            removeComponent<Movable>(manager, eMovable.entityId);
+
+            
+            // TODO: query in game loop :( (find alternative)
+            const textId = manager.queryEntities(textQuery)?.entities[0]?.id;
+            if (!isNaN(textId)) {
+              const pMovable = movable[movable.length-1].data as Movable;
+              
+              addComponent<ScoreText>(manager, textId, { content: `${player[0].data.score}`, fontSize: 30, alpha: 1 })
+              addComponent<Movable>(
+                manager, 
+                textId, 
+                { 
+                  position: {
+                    x: pMovable.position.x, y: pMovable.position.y 
+                  }, 
+                  velocity: {x: 0, y: -1}, 
+                  speed: 200
+                });
+            }
+          }
+      }
+    };
+
+    manager.registerSystemWithEscQuery(bulletHitSystem, query);
   }
   
 }

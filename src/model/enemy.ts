@@ -1,9 +1,3 @@
-import {ComponentIdentifier} from 'naive-ts-ecs';
+export interface EnemyTag {
 
-export class Enemy implements ComponentIdentifier {
-  public static readonly identifier = 'Enemy';
-
-  identifier(): string {
-    return Enemy.identifier;
-  }
 }
