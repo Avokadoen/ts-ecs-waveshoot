@@ -1,23 +1,9 @@
-import { ComponentIdentifier } from "naive-ts-ecs";
-
-export class ScoreText implements ComponentIdentifier {
-    public static readonly identifier = 'ScoreText';
-
-    constructor(
-        public content: string, 
-        public fontSize: number, 
-        public alpha: number
-        ) {}
-
-    identifier(): string {
-        return ScoreText.identifier;
-    }
+export interface ScoreText {
+    content: string;
+    fontSize: number; 
+    alpha: number;
 }
 
-export class ScoreTextTag implements ComponentIdentifier {
-    public static readonly identifier = 'ScoreTextTag';
+export interface ScoreTextTag {
 
-    identifier(): string {
-        return ScoreTextTag.identifier;
-    }
 }

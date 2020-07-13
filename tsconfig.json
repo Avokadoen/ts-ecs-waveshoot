@@ -5,6 +5,15 @@
     "moduleResolution": "node",
     "module": "es6",
     "target": "es5",
+    "lib": [
+      "dom", 
+      "es5",
+      "ES2015.Core",
+      "ES2015.Collection",
+      "ES2015.Iterable"
+    ],
+    "downlevelIteration": true,
+    "allowSyntheticDefaultImports": true,
     "jsx": "react",
     "allowJs": true,
     "sourceMap": true,

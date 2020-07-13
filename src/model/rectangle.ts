@@ -1,17 +1,9 @@
 import {Vector2D} from './vector2D.model';
 import {Movable} from './movable';
-import {ComponentIdentifier} from 'naive-ts-ecs';
 
-export class Rectangle implements ComponentIdentifier {
-
-  public static readonly identifier = 'Rectangle';
-
-  constructor(public color: string, public size: Vector2D) {
-  }
-
-  identifier(): string {
-    return Rectangle.identifier;
-  }
+export interface Rectangle {
+  color: string;
+  size: Vector2D;
 }
 
 // TODO: this might be missing taking canvas into consideration

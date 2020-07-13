@@ -18,6 +18,7 @@
   "author": "Avokadoen",
   "license": "MIT",
   "devDependencies": {
+    "naive-ts-ecs": "file:../ts-ecs",
     "ts-loader": "^7.0.5",
     "typescript": "^3.9.5",
     "webpack": "^4.43.0",
@@ -25,7 +26,7 @@
     "webpack-dev-server": "^3.11.0"
   },
   "dependencies": {
-    "naive-ts-ecs": "^1.2.2",
+    "naive-ts-ecs": "../ts-ecs",
     "rxjs": "^6.5.5"
   }
 }

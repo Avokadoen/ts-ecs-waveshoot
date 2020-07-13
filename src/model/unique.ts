@@ -1,9 +1,3 @@
-import {ComponentIdentifier} from 'naive-ts-ecs';
+export interface UniqueTag {
 
-export class Unique implements ComponentIdentifier {
-  public static readonly identifier = 'Unique';
-
-  identifier(): string {
-    return Unique.identifier;
-  }
 }
