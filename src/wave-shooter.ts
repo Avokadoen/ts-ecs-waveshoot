@@ -3,7 +3,7 @@ import {Movable} from './model/movable';
 import {Player} from './model/player.model';
 import {fromEvent, timer} from 'rxjs';
 import {delay, filter, map} from 'rxjs/operators';
-import {magnitude, normalize, scale} from './model/vector2D.model';
+import {magnitude, normalize, scale, Vector2D, zero} from './model/vector2D.model';
 import {Bullet} from './model/bullet';
 import {EnemyTag} from './model/enemy';
 import {UniqueTag} from './model/unique';
@@ -17,11 +17,10 @@ import {
   addComponent, 
   registerSystem,
   removeComponent,
-  QueryBuilder, 
-  registerEvent
 } from 'naive-ts-ecs';
+import { InactiveTag } from './model/inactive-tag';
 
-// TODO: enemey and bullet should be using an active and inactive tag instead of removing movable
+// TODO: Using unique tags for each type (buller and enemy) would save some invalidated queries
 
 export class WaveShooterGame {
   public readonly ENEMIES_SPEED = 210;
@@ -43,6 +42,8 @@ export class WaveShooterGame {
   constructor(public canvas: HTMLCanvasElement) {
     this.manager = new ECSManager();
 
+    const zeroVector: Vector2D = zero(); 
+
     // As of 1.4 all components has to be registered before they can be added
     registerComponentType<UniqueTag>(this.manager, {});
     registerComponentType<EnemyTag>(this.manager, {});
@@ -55,20 +56,15 @@ export class WaveShooterGame {
     registerComponentType<ScoreTextTag>(this.manager, {});
     registerComponentType<Player>(this.manager, { score: 0 });
     registerComponentType<Movable>(this.manager, {
-      position: {
-        x: 0,
-        y: 0
-      },
-      velocity: {
-        x: 0,
-        y: 0
-      },
+      position: zeroVector,
+      velocity: zeroVector,
       speed: 0
     });
     registerComponentType<Rectangle>(this.manager, {
       color: '#ffffff',
       size: { x: 500, y: 500 }
-    })
+    });
+    registerComponentType<InactiveTag>(this.manager, { });
 
     addComponent<UniqueTag>(this.manager, this.manager.createEntity().entityId);
     for (let i = 0; i < this.ENEMIES_COUNT; i++) {
@@ -78,6 +74,12 @@ export class WaveShooterGame {
         color: '#ff4081', 
         size: { x: 20, y: 30 }
       });
+      addComponent<Movable>(this.manager, entityId, {
+        position: zeroVector,
+        velocity: zeroVector,
+        speed: this.ENEMIES_SPEED
+      });
+      addComponent<InactiveTag>(this.manager, entityId);
     }
 
     for (let i = 0; i < this.BULLET_COUNT; i++) {
@@ -87,6 +89,12 @@ export class WaveShooterGame {
         color: '#ffffff', 
         size: { x: 4, y: 4 }
       });
+      addComponent<Movable>(this.manager, entityId, {
+        position: zeroVector,
+        velocity: zeroVector,
+        speed: this.BULLET_SPEED
+      });
+      addComponent<InactiveTag>(this.manager, entityId);
     }
 
     for (let i = 0; i < 10; i++) {
@@ -102,10 +110,7 @@ export class WaveShooterGame {
           x: canvas.width * 0.5 - this.PLAYER_RECT.size.x * 0.5,
           y: canvas.height * 0.5 - this.PLAYER_RECT.size.y * 0.5
         },
-        velocity: {
-          x: 0,
-          y: 0,
-        },
+        velocity: zeroVector,
         speed: this.PLAYER_SPEED
       });
       addComponent<Rectangle>(this.manager, entityId, {
@@ -170,6 +175,22 @@ module UtilityModule {
   }
 
   function rDrawEntitySystem(manager: ECSManager, ctx: CanvasRenderingContext2D) {
+    const query = {
+      token: QueryToken.AND,
+      leftChild: {
+        typeStr: 'Rectangle',
+      },
+      rightChild: {
+        token: QueryToken.NOT,
+        leftChild: {
+          typeStr: 'Movable'
+        },
+        rightChild: {
+          typeStr: 'InactiveTag'
+        }
+      }
+    }
+    
     const drawRectangleSystem = (_: number, rect: Component<Rectangle>, movable: Component<Movable>) => {
       ctx.fillStyle = rect.data.color;
       ctx.fillRect(
@@ -180,7 +201,7 @@ module UtilityModule {
       );
     };
 
-    registerSystem(manager, drawRectangleSystem);
+    manager.registerSystemWithEscQuery(drawRectangleSystem, query);
   }
 
   function rdrawScoreTextSystem(manager: ECSManager, ctx: CanvasRenderingContext2D) {
@@ -264,37 +285,81 @@ module PlayerModule {
 
   function rShootBulletEvent(manager: ECSManager, canvas: HTMLCanvasElement, bulletSpeed: number) {
 
-    const bulletQuery = new QueryBuilder().identifier('Bullet')
-      .token(QueryToken.NOT)
-      .identifier('Movable')
-      .build();
+    const query: QueryNode = {
+      token: QueryToken.AND,
+      leftChild: {
+        typeStr: 'Player'
+      },
+      rightChild: {
+        token: QueryToken.AND,
+        leftChild: {
+          typeStr: 'Movable'
+        },
+        rightChild: {
+          token: QueryToken.OR,
+          leftChild: {
+            typeStr: 'Rectangle'
+          },
+          rightChild: {
+            token: QueryToken.SHARED,
+            leftChild: {
+              token: QueryToken.AND,
+              leftChild: {
+                typeStr: 'Bullet'
+              },
+              rightChild: {
+                token: QueryToken.AND,
+                leftChild: {
+                  typeStr: 'Movable'
+                },
+                rightChild: {
+                  typeStr: 'InactiveTag'
+                }
+              }
+            }
+          } 
+        }
+      }
+    }
 
-    const shootBulletEvent = (event: Event, movable: Component<Movable>, rectangle: Component<Rectangle>) => {
+
+    const shootBulletEvent = (
+      event: Event, 
+      _player: Component<Player>,
+      pMovable: Component<Movable>,
+      pRectangle: Component<Rectangle>,
+      bullet: Component<Bullet>[], 
+      bMovable: Component<Movable>[],
+      _bInactive: Component<InactiveTag>[]
+    ) => {
+     
+      if (bullet?.length < 0) {
+        return;
+      }
+
       const e = event as MouseEvent;
 
+      const centerX = pMovable.data.position.x + pRectangle.data.size.x * 0.5;
+      const centerY = pMovable.data.position.y + pRectangle.data.size.y * 0.5;
+
       const clickDelta = {
-        x: e.clientX - (movable.data.position.x + rectangle.data.size.x * 0.5) - canvas.offsetLeft,
-        y: e.clientY - (movable.data.position.y + rectangle.data.size.y * 0.5) - canvas.offsetTop
+        x: e.clientX - (centerX) - canvas.offsetLeft,
+        y: e.clientY - (centerY) - canvas.offsetTop
       };
 
       const shootDirection = normalize(clickDelta);
-
       const bulletSpawn = scale(shootDirection, 20);
 
-      // TODO: query in game loop :( (find alternative)
-      const bulletId = manager.queryEntities(bulletQuery).entities[0].id;
-      // TODO: add a bulle spawn tag instead as adding a movable will invalidate the most common queries in the game
-      addComponent<Movable>(manager, bulletId, {
-        position: {
-          x: movable.data.position.x + rectangle.data.size.x * 0.5 + bulletSpawn.x,
-          y: movable.data.position.y + rectangle.data.size.y * 0.5 + bulletSpawn.y,
-        },
-        velocity: shootDirection,
-        speed: bulletSpeed
-      });
+      removeComponent<InactiveTag>(manager, bullet[0].entityId);
+      bMovable[0].data.position = {
+        x: centerX + bulletSpawn.x,
+        y: centerY + bulletSpawn.y,
+      };
+      bMovable[0].data.velocity = shootDirection;
+      bMovable[0].data.speed = bulletSpeed;
     };
 
-    const onUserClick = registerEvent(manager, shootBulletEvent)
+    const onUserClick = manager.registerEventWithEscQuery(shootBulletEvent, query);
     fromEvent(canvas, 'click').subscribe(e => manager.onEvent(onUserClick, e));
   }
 }
@@ -312,11 +377,16 @@ module EnemyModule {
             typeStr: 'EnemyTag'
         },
         rightChild: {
-            token: QueryToken.OR,
+            token: QueryToken.NOT,
             leftChild: {
                 typeStr: 'Movable'
             },
             rightChild: {
+              token: QueryToken.OR,
+              leftChild: {
+                typeStr: 'InactiveTag'
+              },
+              rightChild: {
                 token: QueryToken.SHARED,
                 leftChild: {
                     token: QueryToken.AND,
@@ -327,6 +397,7 @@ module EnemyModule {
                         typeStr: 'Movable'
                     }
                 }
+              }
             }
         }
     };
@@ -347,18 +418,42 @@ module EnemyModule {
   }
 
   function rSpawnEnemySystem(manager: ECSManager, canvas: HTMLCanvasElement, enemySpeed: number, difficultyScaling: () => number) {
-    const enemyQuery: QueryNode = {
-      token: QueryToken.NOT,
+    const query: QueryNode = {
+      token: QueryToken.OR,
       leftChild: {
-        typeStr: 'EnemyTag'
+        typeStr: 'UniqueTag'
       },
       rightChild: {
-        typeStr: 'Movable'
+        token: QueryToken.SHARED,
+        leftChild: {
+          token: QueryToken.AND,
+          leftChild: {
+            typeStr: 'EnemyTag'
+          },
+          rightChild: {
+            token: QueryToken.AND, 
+            leftChild: {
+              typeStr: 'Movable'
+            },
+            rightChild: {
+              typeStr: 'InactiveTag'
+            }
+          }
+        }
       }
     };
 
+    const spawnEnemySystem = (
+      _e : Event, 
+      _u: Component<UniqueTag>, 
+      enemyTags: Component<EnemyTag>[],
+      movables: Component<Movable>[],
+      _inactives: Component<InactiveTag>[]
+    ) => {
+      if (!enemyTags) {
+        return;
+      }
 
-    const spawnEnemySystem = (_e : Event, _u: Component<UniqueTag>) => {
       const xIsSmooth = (Math.random() > 0.5);
       let xSpawn: number;
       let ySpawn: number;
@@ -372,17 +467,13 @@ module EnemyModule {
         xSpawn = (Math.random() > 0.5) ? canvas.width + yOffset : -yOffset;
       }
 
-      const enemyId = manager.queryEntities(enemyQuery).entities[0]?.id;
-      if (!isNaN(enemyId)) {
-        addComponent<Movable>(manager, enemyId, {
-          position: {
-            x: xSpawn,
-            y: ySpawn,
-          },
-          velocity: { x: 0, y: 0},
-          speed: enemySpeed
-        });
-      }
+      removeComponent<InactiveTag>(manager, enemyTags[0].entityId);
+      movables[0].data.position = {
+        x: xSpawn,
+        y: ySpawn,
+      };
+      movables[0].data.velocity = zero();
+      movables[0].data.speed = enemySpeed;
     };
 
     const spawnEnemyEvent = timer(2000, 1000).pipe(
@@ -390,7 +481,7 @@ module EnemyModule {
     );
 
     
-    const onSpawnEnemy = registerEvent(manager, spawnEnemySystem);
+    const onSpawnEnemy = manager.registerEventWithEscQuery(spawnEnemySystem, query);
     spawnEnemyEvent.subscribe(() => manager.onEvent(onSpawnEnemy, null));
   }
 }
@@ -410,19 +501,25 @@ module BulletModule {
         typeStr: 'Bullet'
       },
       rightChild: {
-        token: QueryToken.OR,
+        token: QueryToken.NOT,
         leftChild: {
           typeStr: 'Movable'
         },
         rightChild: {
-          token: QueryToken.SHARED,
+          token: QueryToken.OR,
           leftChild: {
-            token: QueryToken.AND,
+            typeStr: 'InactiveTag'
+          },
+          rightChild: {
+            token: QueryToken.SHARED,
             leftChild: {
-              typeStr: 'Player'
-            },
-            rightChild: {
-              typeStr: 'Movable'
+              token: QueryToken.AND,
+              leftChild: {
+                typeStr: 'Player'
+              },
+              rightChild: {
+                typeStr: 'Movable'
+              }
             }
           }
         }
@@ -432,11 +529,11 @@ module BulletModule {
     const despawnBulletsSystem = (_: number, 
       bullet: Component<Bullet>, 
       bMovable: Component<Movable>, 
-      player: Component<Player>[], 
+      _player: Component<Player>[], 
       pMovable: Component<Movable>[]) => {
 
       if (Math.abs(magnitude(bMovable.data.position) - magnitude(pMovable[0].data.position)) > bullet.data.maxRange) {
-        removeComponent<Movable>(manager, bMovable.entityId);
+        addComponent<InactiveTag>(manager, bMovable.entityId);
       }
     };
 
@@ -444,6 +541,7 @@ module BulletModule {
   }
 
   function rBulletHitSystem(manager: ECSManager) {
+  
     const query: QueryNode = {
       token: QueryToken.AND,
       leftChild: {
@@ -455,11 +553,16 @@ module BulletModule {
           typeStr: 'Movable'
         },
         rightChild: {
-          token: QueryToken.OR,
+          token: QueryToken.NOT,
           leftChild: {
             typeStr: 'Bullet'
           },
           rightChild: {
+            token: QueryToken.OR,
+            leftChild: {
+              typeStr: 'InactiveTag'
+            },
+            rightChild: {
               token: QueryToken.SHARED,
               leftChild: {
                 token: QueryToken.AND,
@@ -474,7 +577,13 @@ module BulletModule {
                   rightChild: {
                     token: QueryToken.OR,
                     leftChild: {
-                      typeStr: 'EnemyTag'
+                      token: QueryToken.NOT,
+                      leftChild: {
+                        typeStr: 'EnemyTag'
+                      },
+                      rightChild: {
+                        typeStr: 'InactiveTag'
+                      }
                     },
                     rightChild: {
                       typeStr: 'Player'
@@ -482,6 +591,7 @@ module BulletModule {
                   }
                 }
               }
+          }
           }
         }
       }
@@ -501,30 +611,30 @@ module BulletModule {
         _: number,
         bRectangle: Component<Rectangle>,
         bMovable: Component<Movable>,
-        _bullet: Component<Bullet>,
+        bullet: Component<Bullet>,
         rectangles: Component<Rectangle>[],
-        movable: Component<Movable>[],
-        enemyTag: Component<EnemyTag>[],
+        movables: Component<Movable>[],
+        enemyTags: Component<EnemyTag>[],
         player: Component<Player>[],
        ) => {
 
-        if (!enemyTag || !player) {
+        if (!enemyTags || !player) {
           return;
         }
 
-        for (let [index, enemy] of enemyTag.entries()) {
+        for (let [index, _enemyTag] of enemyTags.entries()) {
           const eRectangle = rectangles[index]; // this just happens to align, otherwise a find id would be a safer approach
-          const eMovable = movable[index]; // same for this
+          const eMovable = movables[index]; // same for this
           if (isColling(bRectangle.data, bMovable.data, eRectangle.data, eMovable.data)) {
             player[0].data.score += 10;
-            removeComponent<Movable>(manager, bMovable.entityId);
-            removeComponent<Movable>(manager, eMovable.entityId);
+            addComponent<InactiveTag>(manager, bullet.entityId);
+            addComponent<InactiveTag>(manager, eMovable.entityId);
 
             
             // TODO: query in game loop :( (find alternative)
             const textId = manager.queryEntities(textQuery)?.entities[0]?.id;
             if (!isNaN(textId)) {
-              const pMovable = movable[movable.length-1].data as Movable;
+              const pMovable = movables[movables.length-1].data as Movable;
               
               addComponent<ScoreText>(manager, textId, { content: `${player[0].data.score}`, fontSize: 30, alpha: 1 })
               addComponent<Movable>(

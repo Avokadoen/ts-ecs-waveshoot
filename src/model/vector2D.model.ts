@@ -28,3 +28,10 @@ export function scale(vector: Vector2D, value: number): Vector2D {
     y: vector.y * value,
   };
 }
+
+export function zero(): Vector2D {
+  return {
+    x: 0,
+    y: 0
+  };
+}
