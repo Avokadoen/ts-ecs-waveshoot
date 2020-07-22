@@ -8,6 +8,13 @@ fromEvent(window, 'DOMContentLoaded').subscribe(() => {
     return;
   }
 
+  const onResize = () => {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  fromEvent(window, 'resize').subscribe(onResize);
+  onResize();
+
   const waveShoot = new WaveShooterGame(canvas);
   waveShoot.initialize();
   
